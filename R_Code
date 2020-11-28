@@ -1,0 +1,319 @@
+library(data.table)
+library(AER)
+library(car)
+library(lattice)
+library(splitstackshape)
+library(base)
+library(corrplot)
+library(tidyverse)
+library(MASS)
+library(stargazer)
+#install.packages("pscl")
+library(pscl)
+library(Hmisc)
+
+setwd("your directory name")
+fread("yellow_tripdata_2020-06.csv")->taxi1
+fread("yellow_tripdata_2020-05.csv")->taxi2
+fread("yellow_tripdata_2020-04.csv")->taxi3
+fread("yellow_tripdata_2020-03.csv")->taxi4
+fread("yellow_tripdata_2020-02.csv")->taxi5
+fread("yellow_tripdata_2020-01.csv")->taxi6
+fread("yellow_tripdata_2019-12.csv")->taxi7
+fread("yellow_tripdata_2019-11.csv")->taxi8
+fread("yellow_tripdata_2019-10.csv")->taxi9
+fread("yellow_tripdata_2019-09.csv")->taxi10
+fread("yellow_tripdata_2019-08.csv")->taxi11
+fread("yellow_tripdata_2019-07.csv")->taxi12
+
+#the format is the same, as are the colnames->can easily just rbind the whole data
+
+rbind(taxi1,taxi2)->taxi
+rbind(taxi,taxi3)->taxi
+rbind(taxi,taxi4)->taxi
+rbind(taxi,taxi5)->taxi
+rbind(taxi,taxi6)->taxi
+rbind(taxi,taxi7)->taxi
+rbind(taxi,taxi8)->taxi
+rbind(taxi,taxi9)->taxi
+rbind(taxi,taxi10)->taxi
+rbind(taxi,taxi11)->taxi
+rbind(taxi,taxi12)->taxi
+rm(taxi1,taxi2,taxi3,taxi4,taxi5,taxi6,taxi7,taxi8,taxi9,taxi10,taxi11,taxi12)
+
+
+taxi %>% filter(payment_type!=2)->taxi#losing close to 10 million observation,
+#which is around 20%
+
+#the 4 other categorires apart from cash are from not completed trips!
+#we cannot use that data, since it is different from the completed trips with competely
+#different dynamic..the total sum of observations of the 4 categories that I am excluding
+#is less than half a million-we still have enough observations
+#taxi %>% filter(payment_type==6) %>% nrow()
+taxi %>% filter(payment_type==1)->taxi
+
+#adding my data
+read.csv("taxi+_zone_lookup.csv")->zone
+nafill(zone$tourist,fill=0)->zone$tourist
+nafill(zone$entertainment,fill=0)->zone$entertainment
+nafill(zone$park,fill=0)->zone$park
+nafill(zone$workplace,fill=0)->zone$workplace
+nafill(zone$other,fill=0)->zone$other
+summary(zone)
+
+gsub(zone$median_realstate,pattern="\\$",replacement="")->zone$median_realstate
+gsub(zone$median_realstate,pattern="\\,",replacement="")->zone$median_realstate
+zone$median_realstate %>% as.numeric()->zone$median_realstate
+
+ifelse(zone$service_zone=="Boro Zone",1,0)->zone$residential
+
+zone %>% select(-c(Zone,service_zone,other))->zone
+
+#first pick up
+colnames(zone)=c("PULocationID","borough_pu","median_rlst_pu","tourist_pu","entert_pu",
+                 "park_pu","workplace_pu","residential_pu")
+left_join(taxi,zone,by="PULocationID")->taxi
+
+#then drop off
+colnames(zone)=c("DOLocationID","borough_do","median_rlst_do","tourist_do","entert_do",
+                 "park_do","workplace_do","residential_do")
+left_join(taxi,zone,by="DOLocationID")->taxi
+
+fwrite(taxi,file="taxi_data.csv")
+#fread("taxi_data.csv")->taxi
+
+########data cleaning
+
+taxi <- subset(taxi, trip_distance>0 & fare_amount>0 & extra>=0 & mta_tax>=0 & tip_amount>=0  &  tolls_amount>=0 &   improvement_surcharge>=0 & total_amount>0 &  congestion_surcharge>=0 & passenger_count>0) 
+#lose almost 2 million obs
+summary(taxi)
+
+taxi$rate_fare=taxi$fare_amount/taxi$trip_distance
+
+taxi %>% filter(!((rate_fare>100)&(total_amount>100)))->taxi
+#losing about 2,5 thousand obs
+
+summary(taxi)
+#fwrite(taxi,file="taxi_data.csv")
+#fread("taxi_data.csv")->taxi
+
+#adding weather
+readxl::read_excel("WeatherData.xlsx")->weather
+weather$...1=NULL
+
+#formating
+format(weather$date_time,"%H")->weather$hour
+as.Date(weather$date,format=c("%Y-%m-%d"))->weather$date
+
+#deleting duplicates
+weather %>% select(date,hour) %>% duplicated()->weather$dups
+weather %>% filter(dups==FALSE)->weather
+weather$dups=NULL
+
+#creating hour and date for taxi
+str_sub(taxi$tpep_pickup_datetime, -8, -7)->taxi$hour
+as.Date(taxi$tpep_pickup_datetime)->taxi$date
+
+left_join(taxi,weather,by=c("date","hour"))->taxi
+
+#removing unnecessary variables
+taxi$`Dew Point`=NULL
+taxi$Wind=NULL
+taxi$`Wind Gust`=NULL
+taxi$date_time=NULL
+taxi$time_24=NULL
+taxi$Time=NULL
+taxi$date=NULL
+taxi$hour=NULL
+
+#some data transformation so that we can use them in the regression
+str_replace(taxi$Temperature,pattern = "F",replacement = "")->taxi$Temperature
+str_trim(taxi$Temperature)->taxi$Temperature
+taxi$Temperature %>% as.numeric()->taxi$Temperature
+taxi %>% drop_na(Temperature)->taxi
+
+str_replace(taxi$Humidity,pattern = "%",replacement = "")->taxi$Humidity
+str_trim(taxi$Humidity)->taxi$Humidity
+#humiodity was in %
+taxi$Humidity %>% as.numeric()->taxi$Humidity
+
+str_replace(taxi$`Wind Speed`,pattern = "mph",replacement = "")->taxi$`Wind Speed`
+str_trim(taxi$`Wind Speed`)->taxi$`Wind Speed`
+taxi$`Wind Speed` %>% as.numeric()->taxi$`Wind Speed`
+
+str_replace(taxi$Pressure,pattern = "in",replacement = "")->taxi$Pressure
+str_trim(taxi$Pressure)->taxi$Pressure
+taxi$Pressure %>% as.numeric()->taxi$Pressure
+
+str_replace(taxi$Precip.,pattern = "in",replacement = "")->taxi$Precip.
+str_trim(taxi$Precip.)->taxi$Precip.
+taxi$Precip. %>% as.numeric()->taxi$Precip.
+
+summary(taxi)
+
+df=taxi
+rm(taxi)
+
+#need to create a subsample to use
+# Make a covid variable based on shutdown date
+df$covid= ifelse(sample$tpep_dropoff_date>'2019-03-08',1,0)
+
+df %>% filter(covid==1)->df_covid
+df %>% filter(covid==0)->df_non
+
+subsample = sample(1:nrow(df_non), size=round(0.15*nrow(df_non)), replace=FALSE)
+df_non <- df_non[subsample,]
+
+rm(df)
+rbind(df_non,df_covid)->df
+
+rm(df_covid,df_non,subsample)
+
+# Further filtering
+# get rid of any fares under 2.50 because that's the nyc minimum
+df %>% filter(fare_amount>=2.5)->df
+
+# Engineered features
+# Get rid of 27 categories into a dummy for condition
+# bad conditions include any of the categories below
+df$good_condition= ifelse(df$condition== "Snow"| 
+                            df$condition=="Rain / Windy"|
+                            df$condition=="Heavy Rain"|
+                            df$condition=="Rain" |
+                            df$condition=="Heavy T-Storm"|
+                            df$condition=="Thunder in the Vicinity"|
+                            df$condition=="Thunder"|
+                            df$condition=="Light Rain with Thunder"|
+                            df$condition=="Thunder / Windy" |
+                            df$condition=="T-Storm",0,1)
+
+# Temperature should only make a difference when causes an inconvenience/discomfort
+df$extreme_temp= ifelse(df$temperature>86| df$temperature<21, 1,0)
+
+# round tip to integer for hurdle model using ceiling to avoid rounding small tips to 0
+df$tip_amount_int= ceiling(df$tip_amount)
+
+# Get hour from tpep_pickup to control for hour differences
+df$hour= substr(df$tpep_pickup_datetime, 12, 13)
+
+# Make sure there are 24 unique hours for each one of the day
+df$hour= as.factor(df$hour)
+
+# Make pick up and drop off datetime instead of char
+df$tpep_dropoff_datetime= as.POSIXct(df$tpep_dropoff_datetime)
+df$tpep_pickup_datetime= as.POSIXct(df$tpep_pickup_datetime)
+
+# Calculate trip time
+df$trip_time= difftime(df$tpep_dropoff_datetime,df$tpep_pickup_datetime, units = 'mins')
+
+#trip could not realistically last less than 3 minutes
+df %>% filter(trip_time>=3)->df
+
+# Correlations for important columns that are numeric
+num_cols= c('trip_time','passenger_count','trip_distance','fare_amount','tip_amount','total_amount','tourist_pu','tourist_do','entert_pu','entert_do','park_pu', 'park_do','workplace_do','residential_do','residential_pu','workplace_pu', 'rate_fare','extreme_temp','precip','wind speed','humidity')
+num_sample= df[,num_cols]
+
+# correlations for float or int columns including dummies
+correlations=cor( num_sample %>%
+                   select_if(~is.numeric(.)))
+    
+#visualize correlations
+corrplot(correlations, method="circle") 
+
+#Store correlations for y variable vs independent
+fare_cor=correlations["fare_amount",]
+tip_cot=correlations["tip_amount",]
+
+# Make improvement surcharge and congestion categorical
+df$improvement_surcharge= as.factor(df$improvement_surcharge)
+df$congestion_surcharge= as.factor(df$congestion_surcharge)
+
+# Fix data types
+df$month= as.factor(df$month)
+
+#adding tip as a fraction of total fare(including the tip)
+df$tip_amount/df$total_amount->df$tip_fraction
+
+#adding the variable which is =1 if there was a tip and 0 otherwise
+ifelse(df$tip_amount>0,1,0)->df$yes_tip
+
+#Build Fare model
+#Summary stats
+describe(df$fare_amount)
+
+#Distribution of fares
+histogram(~fare_amount, data = df, xlim= c(0,50))
+histogram(~fare_amount, data = df , xlim= c(0,200), breaks=500)
+
+histogram(~log(fare_amount), data = df)
+# Look at correlations
+fare_cor
+
+#(IF you leave default parameters, the graph is squished to one side)
+# Look into any trends of fare prices over time
+bwplot(~fare_amount | month, data = df,  xlim= c(0,50))
+
+bwplot(~fare_amount| year, data = df,  xlim= c(0,50))
+
+# See how covid shutdown affected fares
+bwplot(~fare_amount | covid, data = df,  xlim= c(0,50))
+
+rm(num_sample)
+
+# ols mode
+ols_fare= lm(fare_amount~trip_time+trip_distance+borough_pu+tourist_pu+entert_pu+covid+extreme_temp+good_condition+hour, data= df)
+ols_fare_log= lm(log(fare_amount)~trip_time+trip_distance+borough_pu+tourist_pu+entert_pu+covid+extreme_temp+good_condition+hour, data= df)
+summary(ols_fare)
+
+stargazer(ols_fare,ols_fare_log,out="stargazer_taxi_fare_ols.html",single.row = T)
+rm(ols_fare,ols_fare_log)
+#Assumptions
+#Multicollinearity
+vif(ols_fare)
+
+#Independence
+dwtest(ols_fare)
+
+#Build Tips models
+# Look at tips distribution
+
+histogram(~tip_amount, data = df)
+histogram(~log(tip_amount), data= df,breaks=30)
+
+#Look at correlations
+#tip_cor
+# Look into any trends of tips over time
+histogram(~tip_amount | month, data = df)
+histogram(~tip_amount| year, data = df)
+
+# See how covid affected tips
+histogram(~tip_amount | covid, data = df)
+histogram(~log(tip_amount) | covid, data = df)
+
+#boxplot visualizations
+
+bwplot(~tip_amount | month, data= df, xlim = c(0,50))
+#bwplot(~log(tip_amount) | month, data= df, xlim = c(0,50))
+bwplot(~tip_amount| year, data= df, xlim = c(0,50))
+#bwplot(~log(tip_amount)| year, data= df, xlim = c(0,50))
+
+df %>%
+    glm(tip_amount_int~ passenger_count +borough_pu +tourist_pu +entert_pu+workplace_pu +
+            residential_pu+ median_rlst_pu+ borough_do +tourist_do+ entert_do +
+            workplace_do +residential_do+ median_rlst_do +fare_amount+month+ hour+
+            extreme_temp+good_condition+covid, family=poisson (link=log), data=.)->poisson1
+
+summary(poisson1)
+stargazer(poisson1,out="stargazer_taxi_tip_Poisson_only.html",single.row = T)
+
+df %>%
+  glm(tip_amount_int~ passenger_count +borough_pu +tourist_pu +entert_pu+workplace_pu +
+        residential_pu+ median_rlst_pu+ borough_do +tourist_do+ entert_do +
+        workplace_do +residential_do+ median_rlst_do +fare_amount+month+ hour+
+        extreme_temp+good_condition+covid, family=quasipoisson (link=log), data=.)->quasipoisson1
+
+summary(quasipoisson1)
+stargazer(quasipoisson1,out="stargazer_taxi_tip_QuasiPoisson_only.html",single.row = T)
+
+vif(quasipoisson1)
+dwtest(quasipoisson1)
